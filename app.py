@@ -1,966 +1,1388 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+import io
+import re
+import zipfile
+from pathlib import Path
+from urllib.request import Request, urlopen
 
-from sklearn.model_selection import train_test_split
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.pipeline import Pipeline
-from sklearn.naive_bayes import MultinomialNB
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import LinearSVC
 from sklearn.metrics import (
     accuracy_score,
+    confusion_matrix,
+    f1_score,
     precision_score,
     recall_score,
-    f1_score,
-    confusion_matrix
 )
+from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import Pipeline
+from sklearn.svm import LinearSVC
 
-# ============================================================
-# PAGE CONFIG
-# ============================================================
+
+# =========================================================
+# CONFIG
+# =========================================================
 
 st.set_page_config(
     page_title="SpamGuard AI",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# ============================================================
-# CUSTOM CSS
-# ============================================================
+DATASET_URL = (
+    "https://archive.ics.uci.edu/static/public/228/"
+    "sms+spam+collection.zip"
+)
 
-st.markdown("""
+DATASET_FILE = Path("spam.csv")
+
+
+# =========================================================
+# PREMIUM CSS
+# =========================================================
+
+st.markdown(
+    """
 <style>
 
 .stApp {
     background:
-        radial-gradient(circle at 10% 10%, #172554 0%, transparent 30%),
-        radial-gradient(circle at 90% 20%, #3b0764 0%, transparent 30%),
-        linear-gradient(135deg, #020617, #0f172a);
-    color: #f8fafc;
-}
-
-.main-title {
-    font-size: 48px;
-    font-weight: 800;
-    text-align: center;
-    margin-bottom: 5px;
-    background: linear-gradient(90deg, #22d3ee, #a855f7);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-
-.subtitle {
-    text-align: center;
-    color: #94a3b8;
-    font-size: 18px;
-    margin-bottom: 35px;
-}
-
-.card {
-    background: rgba(15, 23, 42, 0.75);
-    border: 1px solid rgba(148, 163, 184, 0.15);
-    border-radius: 18px;
-    padding: 25px;
-    margin-bottom: 20px;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.25);
-}
-
-.spam-result {
-    background: rgba(127, 29, 29, 0.35);
-    border: 1px solid #ef4444;
-    border-radius: 18px;
-    padding: 25px;
-    text-align: center;
-}
-
-.ham-result {
-    background: rgba(6, 78, 59, 0.35);
-    border: 1px solid #22c55e;
-    border-radius: 18px;
-    padding: 25px;
-    text-align: center;
-}
-
-.result-title {
-    font-size: 30px;
-    font-weight: 800;
-}
-
-.metric-card {
-    background: rgba(30, 41, 59, 0.7);
-    border-radius: 15px;
-    padding: 18px;
-    text-align: center;
-    border: 1px solid rgba(148, 163, 184, 0.15);
-}
-
-textarea {
-    background-color: #020617 !important;
-    color: #e2e8f0 !important;
-    border: 1px solid #334155 !important;
-    border-radius: 12px !important;
-}
-
-.stButton > button {
-    width: 100%;
-    border-radius: 12px;
-    border: none;
-    padding: 12px;
-    font-weight: 700;
-    background: linear-gradient(90deg, #06b6d4, #8b5cf6);
-    color: white;
-    transition: 0.3s;
-}
-
-.stButton > button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(139,92,246,0.4);
+        radial-gradient(
+            circle at 10% 0%,
+            rgba(37,99,235,.18),
+            transparent 28%
+        ),
+        radial-gradient(
+            circle at 90% 10%,
+            rgba(124,58,237,.16),
+            transparent 25%
+        ),
+        #050816;
+    color: #e5e7eb;
 }
 
 section[data-testid="stSidebar"] {
-    background: #020617;
+    background: #080d1c;
+    border-right: 1px solid rgba(148,163,184,.12);
+}
+
+.hero {
+    padding: 25px 0 15px 0;
+}
+
+.eyebrow {
+    color: #60a5fa;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 2px;
+}
+
+.hero-title {
+    font-size: 64px;
+    line-height: 1;
+    font-weight: 900;
+    letter-spacing: -3px;
+    color: #f8fafc;
+    margin-top: 8px;
+}
+
+.hero-text {
+    color: #94a3b8;
+    font-size: 17px;
+    max-width: 800px;
+}
+
+.glass {
+    padding: 22px;
+    border-radius: 20px;
+    background: rgba(15,23,42,.72);
+    border: 1px solid rgba(148,163,184,.13);
+    box-shadow: 0 18px 60px rgba(0,0,0,.25);
+}
+
+.risk-card {
+    padding: 25px;
+    border-radius: 20px;
+    border: 1px solid rgba(239,68,68,.55);
+    background:
+        linear-gradient(
+            135deg,
+            rgba(127,29,29,.70),
+            rgba(30,41,59,.85)
+        );
+    box-shadow: 0 0 40px rgba(239,68,68,.20);
+}
+
+.safe-card {
+    padding: 25px;
+    border-radius: 20px;
+    border: 1px solid rgba(34,197,94,.45);
+    background:
+        linear-gradient(
+            135deg,
+            rgba(20,83,45,.60),
+            rgba(15,23,42,.85)
+        );
+    box-shadow: 0 0 35px rgba(34,197,94,.12);
+}
+
+.small-label {
+    color: #94a3b8;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 800;
+}
+
+.big-number {
+    color: #f8fafc;
+    font-size: 30px;
+    font-weight: 900;
+}
+
+.footer {
+    text-align: center;
+    color: #64748b;
+    padding: 30px 0 10px;
+}
+
+div.stButton > button {
+    min-height: 46px;
+    border-radius: 12px;
+    font-weight: 800;
 }
 
 </style>
-""", unsafe_allow_html=True)
-
-# ============================================================
-# HEADER
-# ============================================================
-
-st.markdown(
-    '<div class="main-title">🛡️ SpamGuard AI</div>',
-    unsafe_allow_html=True
+""",
+    unsafe_allow_html=True,
 )
 
-st.markdown(
-    '<div class="subtitle">'
-    'Intelligent Spam Detection using Machine Learning & NLP'
-    '</div>',
-    unsafe_allow_html=True
-)
 
-# ============================================================
-# LOAD DATA
-# ============================================================
+# =========================================================
+# DOWNLOAD / PREPARE DATASET
+# =========================================================
 
-@st.cache_data
-def load_data():
+@st.cache_data(show_spinner=False)
+def prepare_dataset():
 
-    data = pd.read_csv(
-        "spam.csv",
-        encoding="latin-1"
+    # Check existing CSV
+    if DATASET_FILE.exists():
+
+        try:
+            old_df = pd.read_csv(
+                DATASET_FILE,
+                encoding="latin-1"
+            )
+
+            # If already a proper large dataset,
+            # use it.
+            if len(old_df) >= 1000:
+                return old_df
+
+        except Exception:
+            pass
+
+    # Download official UCI dataset
+    request = Request(
+        DATASET_URL,
+        headers={
+            "User-Agent": "SpamGuardAI/1.0"
+        }
     )
 
-    # Standard SMS Spam Collection dataset
-    if "v1" in data.columns and "v2" in data.columns:
+    with urlopen(
+        request,
+        timeout=30
+    ) as response:
 
-        data = data[["v1", "v2"]]
-        data.columns = ["label", "text"]
+        data = response.read()
 
-    else:
-        # Support already-cleaned datasets
-        if "label" not in data.columns or "text" not in data.columns:
-            st.error(
-                "Dataset must contain either "
-                "'v1' and 'v2' or 'label' and 'text' columns."
+    with zipfile.ZipFile(
+        io.BytesIO(data)
+    ) as archive:
+
+        target = None
+
+        for name in archive.namelist():
+
+            if name.lower().endswith(
+                "smsspamcollection"
+            ):
+                target = name
+                break
+
+        if target is None:
+            raise RuntimeError(
+                "SMS Spam Collection file not found."
             )
-            st.stop()
 
-        data = data[["label", "text"]]
+        raw = archive.read(
+            target
+        ).decode(
+            "utf-8"
+        )
 
-    # Clean labels
-    data["label"] = (
-        data["label"]
+    rows = []
+
+    for line in raw.splitlines():
+
+        parts = line.split(
+            "\t",
+            1
+        )
+
+        if len(parts) == 2:
+
+            label = parts[0].strip().lower()
+            message = parts[1].strip()
+
+            if label in ["ham", "spam"]:
+
+                rows.append(
+                    [label, message]
+                )
+
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "v1",
+            "v2"
+        ]
+    )
+
+    df = df.dropna()
+
+    df = df.drop_duplicates(
+        subset=["v2"]
+    )
+
+    df.to_csv(
+        DATASET_FILE,
+        index=False,
+        encoding="utf-8"
+    )
+
+    return df
+
+
+# =========================================================
+# LOAD DATA
+# =========================================================
+
+@st.cache_data(show_spinner=False)
+def load_data():
+
+    df = prepare_dataset()
+
+    df = df[
+        ["v1", "v2"]
+    ].copy()
+
+    df.columns = [
+        "label",
+        "message"
+    ]
+
+    df["label"] = (
+        df["label"]
         .astype(str)
         .str.lower()
         .str.strip()
     )
 
-    data["label"] = data["label"].map({
-        "ham": 0,
-        "spam": 1
-    })
-
-    # Remove invalid rows
-    data = data.dropna(subset=["label", "text"])
-
-    # Convert text to string
-    data["text"] = data["text"].astype(str).str.strip()
-
-    # Remove empty messages
-    data = data[data["text"] != ""]
-
-    # Remove duplicate messages
-    data = data.drop_duplicates(
-        subset=["text"]
+    df["message"] = (
+        df["message"]
+        .astype(str)
+        .str.strip()
     )
 
-    # Convert label to integer
-    data["label"] = data["label"].astype(int)
+    df = df[
+        df["label"].isin(
+            ["ham", "spam"]
+        )
+    ]
 
-    return data.reset_index(drop=True)
+    df = df[
+        df["message"] != ""
+    ]
+
+    df = df.drop_duplicates(
+        subset=["message"]
+    )
+
+    df["target"] = (
+        df["label"]
+        .map(
+            {
+                "ham": 0,
+                "spam": 1
+            }
+        )
+    )
+
+    # Additional dataset features
+    df["char_count"] = (
+        df["message"].str.len()
+    )
+
+    df["word_count"] = (
+        df["message"]
+        .str.split()
+        .str.len()
+    )
+
+    df["url_count"] = (
+        df["message"]
+        .str.count(
+            r"(https?://\S+|www\.\S+)"
+        )
+    )
+
+    df["digit_count"] = (
+        df["message"]
+        .str.count(r"\d")
+    )
+
+    df["exclamation_count"] = (
+        df["message"]
+        .str.count("!")
+    )
+
+    return df.reset_index(
+        drop=True
+    )
 
 
-# ============================================================
-# LOAD DATASET
-# ============================================================
+# =========================================================
+# TF-IDF
+# =========================================================
 
-data = load_data()
+def create_vectorizer():
 
-# ============================================================
-# DATASET STATISTICS
-# ============================================================
+    return TfidfVectorizer(
 
-total_messages = len(data)
+        lowercase=True,
 
-spam_messages = int(
-    (data["label"] == 1).sum()
-)
+        strip_accents="unicode",
 
-ham_messages = int(
-    (data["label"] == 0).sum()
-)
+        sublinear_tf=True,
 
-spam_percentage = (
-    spam_messages / total_messages * 100
-)
+        ngram_range=(1, 2),
 
-ham_percentage = (
-    ham_messages / total_messages * 100
-)
+        min_df=2,
 
-# ============================================================
-# TRAIN / TEST SPLIT
-# ============================================================
+        max_df=0.98,
 
-X_train, X_test, y_train, y_test = train_test_split(
-    data["text"],
-    data["label"],
-    test_size=0.20,
-    random_state=42,
-    stratify=data["label"]
-)
+        max_features=30000,
 
-# ============================================================
-# CREATE MODELS
-# ============================================================
+        token_pattern=(
+            r"(?u)\b\w[\w$£€]*\b"
+        )
+    )
 
-def create_models():
+
+# =========================================================
+# TRAIN MODELS
+# =========================================================
+
+@st.cache_resource(show_spinner=False)
+def train_models(df):
+
+    X = df["message"]
+
+    y = df["target"]
+
+    X_train, X_test, y_train, y_test = (
+        train_test_split(
+            X,
+            y,
+            test_size=0.20,
+            random_state=42,
+            stratify=y
+        )
+    )
 
     models = {
 
-        "Naive Bayes": Pipeline([
-            (
-                "tfidf",
-                TfidfVectorizer(
-                    lowercase=True,
-                    stop_words="english",
-                    ngram_range=(1, 2),
-                    sublinear_tf=True,
-                    min_df=1
-                )
-            ),
-            (
-                "model",
-                MultinomialNB()
-            )
-        ]),
+        "Naive Bayes":
 
-        "Logistic Regression": Pipeline([
-            (
-                "tfidf",
-                TfidfVectorizer(
-                    lowercase=True,
-                    stop_words="english",
-                    ngram_range=(1, 2),
-                    sublinear_tf=True,
-                    min_df=1
-                )
-            ),
-            (
-                "model",
-                LogisticRegression(
-                    max_iter=1000,
-                    random_state=42
-                )
-            )
-        ]),
+        Pipeline(
+            [
+                (
+                    "tfidf",
+                    create_vectorizer()
+                ),
 
-        "Linear SVM": Pipeline([
-            (
-                "tfidf",
-                TfidfVectorizer(
-                    lowercase=True,
-                    stop_words="english",
-                    ngram_range=(1, 2),
-                    sublinear_tf=True,
-                    min_df=1
+                (
+                    "classifier",
+                    MultinomialNB(
+                        alpha=0.25
+                    )
                 )
-            ),
-            (
-                "model",
-                LinearSVC(
-                    random_state=42
+            ]
+        ),
+
+        "Logistic Regression":
+
+        Pipeline(
+            [
+                (
+                    "tfidf",
+                    create_vectorizer()
+                ),
+
+                (
+                    "classifier",
+                    LogisticRegression(
+                        max_iter=1500,
+                        class_weight="balanced",
+                        C=2.0
+                    )
                 )
-            )
-        ])
+            ]
+        ),
+
+        "Calibrated Linear SVM":
+
+        Pipeline(
+            [
+                (
+                    "tfidf",
+                    create_vectorizer()
+                ),
+
+                (
+                    "classifier",
+                    CalibratedClassifierCV(
+                        estimator=LinearSVC(
+                            C=1.5,
+                            class_weight="balanced"
+                        ),
+                        method="sigmoid",
+                        cv=5
+                    )
+                )
+            ]
+        )
     }
 
-    return models
-
-
-# ============================================================
-# TRAIN MODELS
-# ============================================================
-
-@st.cache_resource
-def train_models(
-    X_train_data,
-    X_test_data,
-    y_train_data,
-    y_test_data
-):
-
-    models = create_models()
-
-    trained_models = {}
     results = {}
-    predictions_store = {}
 
-    for name, pipeline in models.items():
+    for name, model in models.items():
 
-        pipeline.fit(
-            X_train_data,
-            y_train_data
+        model.fit(
+            X_train,
+            y_train
         )
 
-        predictions = pipeline.predict(
-            X_test_data
+        predictions = model.predict(
+            X_test
         )
 
-        accuracy = accuracy_score(
-            y_test_data,
-            predictions
-        )
-
-        precision = precision_score(
-            y_test_data,
-            predictions,
-            zero_division=0
-        )
-
-        recall = recall_score(
-            y_test_data,
-            predictions,
-            zero_division=0
-        )
-
-        f1 = f1_score(
-            y_test_data,
-            predictions,
-            zero_division=0
-        )
-
-        cm = confusion_matrix(
-            y_test_data,
-            predictions
+        probabilities = (
+            model.predict_proba(
+                X_test
+            )[:, 1]
         )
 
         results[name] = {
-            "Accuracy": accuracy,
-            "Precision": precision,
-            "Recall": recall,
-            "F1 Score": f1
+
+            "model": model,
+
+            "accuracy":
+                accuracy_score(
+                    y_test,
+                    predictions
+                ),
+
+            "precision":
+                precision_score(
+                    y_test,
+                    predictions,
+                    zero_division=0
+                ),
+
+            "recall":
+                recall_score(
+                    y_test,
+                    predictions,
+                    zero_division=0
+                ),
+
+            "f1":
+                f1_score(
+                    y_test,
+                    predictions,
+                    zero_division=0
+                ),
+
+            "confusion":
+                confusion_matrix(
+                    y_test,
+                    predictions
+                )
         }
 
-        predictions_store[name] = {
-            "predictions": predictions,
-            "confusion_matrix": cm
-        }
-
-        trained_models[name] = pipeline
+    best_model_name = max(
+        results,
+        key=lambda name:
+        results[name]["f1"]
+    )
 
     return (
-        trained_models,
         results,
-        predictions_store
+        best_model_name,
+        len(X_train),
+        len(X_test)
     )
 
 
-trained_models, results, predictions_store = train_models(
-    X_train,
-    X_test,
-    y_train,
-    y_test
+# =========================================================
+# SUSPICIOUS INDICATORS
+# =========================================================
+
+def detect_indicators(message):
+
+    indicators = {
+
+        "Urgency":
+        bool(
+            re.search(
+                r"\b("
+                r"urgent|"
+                r"immediately|"
+                r"act now|"
+                r"limited time|"
+                r"last chance|"
+                r"claim now"
+                r")\b",
+                message,
+                re.I
+            )
+        ),
+
+        "URL":
+        bool(
+            re.search(
+                r"(https?://\S+|www\.\S+)",
+                message,
+                re.I
+            )
+        ),
+
+        "Prize / Money":
+        bool(
+            re.search(
+                r"\b("
+                r"win|winner|won|"
+                r"prize|cash|reward|"
+                r"free|lottery|offer"
+                r")\b",
+                message,
+                re.I
+            )
+        ),
+
+        "OTP / Credentials":
+        bool(
+            re.search(
+                r"\b("
+                r"otp|password|pin|"
+                r"bank|account|"
+                r"verify|verification|"
+                r"login"
+                r")\b",
+                message,
+                re.I
+            )
+        ),
+
+        "Phone Number":
+        bool(
+            re.search(
+                r"\+?\d[\d\s-]{7,}\d",
+                message
+            )
+        )
+    }
+
+    return indicators
+
+
+def risk_level(probability):
+
+    if probability >= 0.85:
+        return "CRITICAL"
+
+    if probability >= 0.65:
+        return "HIGH"
+
+    if probability >= 0.40:
+        return "MEDIUM"
+
+    return "LOW"
+
+
+# =========================================================
+# START
+# =========================================================
+
+with st.spinner(
+    "🧠 Loading dataset and training AI models..."
+):
+
+    try:
+
+        df = load_data()
+
+        (
+            results,
+            best_model_name,
+            train_count,
+            test_count
+        ) = train_models(df)
+
+    except Exception as error:
+
+        st.error(
+            "❌ Could not load the dataset "
+            "or train the models."
+        )
+
+        st.exception(error)
+
+        st.stop()
+
+
+best_model = (
+    results[
+        best_model_name
+    ]["model"]
 )
 
-# ============================================================
-# SELECT BEST MODEL
-# ============================================================
 
-best_model_name = max(
-    results,
-    key=lambda model_name:
-        results[model_name]["F1 Score"]
-)
-
-best_model = trained_models[
-    best_model_name
-]
-
-best_results = results[
-    best_model_name
-]
-
-# ============================================================
+# =========================================================
 # SIDEBAR
-# ============================================================
+# =========================================================
 
-st.sidebar.title("🛡️ SpamGuard AI")
-
-st.sidebar.markdown(
-    "### Project Overview"
-)
-
-st.sidebar.write(
-    "A machine learning and NLP system "
-    "for detecting spam and legitimate messages."
-)
-
-st.sidebar.markdown("---")
-
-st.sidebar.write(
-    f"📊 **Dataset:** {total_messages:,} messages"
-)
-
-st.sidebar.write(
-    f"🚫 **Spam:** {spam_messages:,}"
-)
-
-st.sidebar.write(
-    f"✅ **Not Spam:** {ham_messages:,}"
-)
-
-st.sidebar.write(
-    f"🏆 **Best Model:** {best_model_name}"
-)
-
-st.sidebar.markdown("---")
-
-st.sidebar.write(
-    f"📚 **Training Samples:** {len(X_train):,}"
-)
-
-st.sidebar.write(
-    f"🧪 **Testing Samples:** {len(X_test):,}"
-)
-
-# ============================================================
-# NAVIGATION
-# ============================================================
-
-page = st.sidebar.radio(
-    "Navigate",
-    [
-        "🔍 Detector",
-        "📊 Model Performance",
-        "📈 Dataset Insights"
-    ]
-)
-
-# ============================================================
-# DETECTOR
-# ============================================================
-
-if page == "🔍 Detector":
+with st.sidebar:
 
     st.markdown(
-        '<div class="card">',
-        unsafe_allow_html=True
+        "## 🛡️ SpamGuard AI"
     )
 
-    st.subheader("📧 Analyze Your Message")
-
-    st.write(
-        "Enter an email or message below. "
-        "The trained NLP system will classify it "
-        "as Spam or Not Spam."
+    st.caption(
+        "AI-powered spam detection"
     )
 
-    user_input = st.text_area(
-        "Message Content",
-        height=180,
-        placeholder=(
-            "Example: Congratulations! "
-            "You have won a free prize..."
+    st.divider()
+
+    st.markdown(
+        "### 📊 Dataset"
+    )
+
+    st.metric(
+        "Total Messages",
+        f"{len(df):,}"
+    )
+
+    st.metric(
+        "Spam",
+        f"{int(df['target'].sum()):,}"
+    )
+
+    st.metric(
+        "Not Spam",
+        f"{int((df['target'] == 0).sum()):,}"
+    )
+
+    st.divider()
+
+    st.markdown(
+        "### 🏆 Best Model"
+    )
+
+    st.success(
+        best_model_name
+    )
+
+    st.caption(
+        f"Training: {train_count:,}"
+    )
+
+    st.caption(
+        f"Testing: {test_count:,}"
+    )
+
+    st.divider()
+
+    st.caption(
+        "Dataset: UCI SMS Spam Collection"
+    )
+
+
+# =========================================================
+# HERO
+# =========================================================
+
+st.markdown(
+    """
+<div class="hero">
+
+<div class="eyebrow">
+AI • NLP • CYBERSECURITY
+</div>
+
+<div class="hero-title">
+🛡️ SpamGuard AI
+</div>
+
+<div class="hero-text">
+Intelligent spam detection using TF-IDF,
+supervised machine learning and calibrated
+confidence scoring.
+</div>
+
+</div>
+""",
+    unsafe_allow_html=True
+)
+
+
+# =========================================================
+# METRICS
+# =========================================================
+
+c1, c2, c3, c4 = st.columns(4)
+
+c1.metric(
+    "Messages",
+    f"{len(df):,}"
+)
+
+c2.metric(
+    "Spam Rate",
+    f"{df['target'].mean() * 100:.1f}%"
+)
+
+c3.metric(
+    "Best F1",
+    f"{results[best_model_name]['f1'] * 100:.2f}%"
+)
+
+c4.metric(
+    "Models",
+    "3"
+)
+
+
+st.divider()
+
+
+# =========================================================
+# NAVIGATION
+# =========================================================
+
+page = st.radio(
+
+    "Workspace",
+
+    [
+        "📧 Detector",
+        "📈 Model Lab",
+        "📊 Dataset Intelligence"
+    ],
+
+    horizontal=True,
+
+    label_visibility="collapsed"
+)
+
+
+# =========================================================
+# DETECTOR
+# =========================================================
+
+if page == "📧 Detector":
+
+    left, right = st.columns(
+        [1.45, 0.75],
+        gap="large"
+    )
+
+    with left:
+
+        st.subheader(
+            "📧 Spam Message Detector"
         )
-    )
 
-    if st.button("🔎 Analyze Message"):
+        st.caption(
+            "Paste an SMS or email message "
+            "and let the AI analyze it."
+        )
 
-        if not user_input.strip():
+        message = st.text_area(
 
-            st.warning(
-                "⚠️ Please enter a message first."
-            )
+            "Message",
 
-        else:
+            height=220,
 
-            prediction = best_model.predict(
-                [user_input]
-            )[0]
+            placeholder=(
+                "Paste a suspicious message here..."
+            ),
 
-            # ----------------------------------------
-            # PROBABILITY
-            # ----------------------------------------
+            label_visibility="collapsed"
+        )
 
-            spam_probability = None
+        analyze = st.button(
 
-            if hasattr(
-                best_model,
-                "predict_proba"
-            ):
+            "🔎 ANALYZE MESSAGE",
 
-                probabilities = (
-                    best_model
-                    .predict_proba(
-                        [user_input]
-                    )[0]
+            type="primary",
+
+            use_container_width=True
+        )
+
+        if analyze:
+
+            if not message.strip():
+
+                st.warning(
+                    "⚠️ Please enter a message."
                 )
-
-                spam_probability = probabilities[1]
 
             else:
 
-                # LinearSVC does not provide
-                # predict_proba.
-                #
-                # Convert decision score to
-                # a confidence-like value.
-
-                decision_score = (
-                    best_model
-                    .decision_function(
-                        [user_input]
+                prediction = int(
+                    best_model.predict(
+                        [message]
                     )[0]
                 )
 
-                confidence = (
-                    1 /
-                    (
-                        1 +
-                        np.exp(
-                            -decision_score
+                probability = float(
+                    best_model.predict_proba(
+                        [message]
+                    )[0][1]
+                )
+
+                risk = risk_level(
+                    probability
+                )
+
+                indicators = (
+                    detect_indicators(
+                        message
+                    )
+                )
+
+                detected = [
+                    name
+                    for name, value
+                    in indicators.items()
+                    if value
+                ]
+
+                st.divider()
+
+                if prediction == 1:
+
+                    st.markdown(
+                        f"""
+<div class="risk-card">
+
+<div class="small-label">
+THREAT DETECTED
+</div>
+
+<h1>
+🚨 SPAM MESSAGE
+</h1>
+
+<p>
+The AI model classified this message
+as likely spam.
+</p>
+
+<h2>
+{probability * 100:.2f}%
+</h2>
+
+<p>
+<b>Spam confidence</b>
+</p>
+
+<p>
+<b>Risk Level:</b> {risk}
+</p>
+
+</div>
+""",
+                        unsafe_allow_html=True
+                    )
+
+                else:
+
+                    ham_confidence = (
+                        1 - probability
+                    )
+
+                    st.markdown(
+                        f"""
+<div class="safe-card">
+
+<div class="small-label">
+ANALYSIS COMPLETE
+</div>
+
+<h1>
+✅ LIKELY NOT SPAM
+</h1>
+
+<p>
+No strong spam pattern was detected.
+</p>
+
+<h2>
+{ham_confidence * 100:.2f}%
+</h2>
+
+<p>
+<b>Ham confidence</b>
+</p>
+
+<p>
+<b>Risk Level:</b> {risk}
+</p>
+
+</div>
+""",
+                        unsafe_allow_html=True
+                    )
+
+                st.progress(
+
+                    min(
+                        max(
+                            probability,
+                            0.0
+                        ),
+                        1.0
+                    ),
+
+                    text=(
+                        f"Spam probability: "
+                        f"{probability * 100:.2f}%"
+                    )
+                )
+
+                st.subheader(
+                    "🔍 Suspicious Indicators"
+                )
+
+                if detected:
+
+                    cols = st.columns(
+                        min(
+                            len(detected),
+                            3
                         )
                     )
-                )
 
-                spam_probability = confidence
+                    for i, item in enumerate(
+                        detected
+                    ):
 
-            # ----------------------------------------
-            # SPAM RESULT
-            # ----------------------------------------
+                        cols[
+                            i % len(cols)
+                        ].warning(
+                            f"⚠️ {item}"
+                        )
 
-            if prediction == 1:
+                else:
 
-                st.markdown(
-                    '<div class="spam-result">'
-                    '<div class="result-title">'
-                    '🚨 SPAM DETECTED'
-                    '</div>'
-                    '<p>'
-                    'This message is classified as '
-                    'potentially suspicious.'
-                    '</p>'
-                    '</div>',
-                    unsafe_allow_html=True
-                )
-
-            # ----------------------------------------
-            # HAM RESULT
-            # ----------------------------------------
-
-            else:
-
-                st.markdown(
-                    '<div class="ham-result">'
-                    '<div class="result-title">'
-                    '✅ NOT SPAM'
-                    '</div>'
-                    '<p>'
-                    'This message appears to be '
-                    'legitimate.'
-                    '</p>'
-                    '</div>',
-                    unsafe_allow_html=True
-                )
-
-            # ----------------------------------------
-            # PROBABILITY
-            # ----------------------------------------
-
-            st.markdown(
-                "### 🎯 Spam Probability"
-            )
-
-            st.progress(
-                float(
-                    np.clip(
-                        spam_probability,
-                        0,
-                        1
+                    st.success(
+                        "No obvious suspicious "
+                        "indicators detected."
                     )
-                )
-            )
+
+                if prediction == 1:
+
+                    st.warning(
+                        "🚫 Security reminder: "
+                        "Never share OTPs, passwords, "
+                        "banking credentials or personal "
+                        "information with unknown senders."
+                    )
+
+    with right:
+
+        st.subheader(
+            "⚙️ AI Model Status"
+        )
+
+        st.markdown(
+            f"""
+<div class="glass">
+
+<div class="small-label">
+ACTIVE MODEL
+</div>
+
+<div class="big-number">
+{best_model_name}
+</div>
+
+<br>
+
+<div class="small-label">
+F1 SCORE
+</div>
+
+<div class="big-number">
+{results[best_model_name]['f1'] * 100:.2f}%
+</div>
+
+<br>
+
+<div class="small-label">
+EVALUATION
+</div>
+
+<div>
+Stratified 80/20 holdout
+</div>
+
+</div>
+""",
+            unsafe_allow_html=True
+        )
+
+        st.subheader(
+            "🧠 ML Pipeline"
+        )
+
+        steps = [
+
+            "1. Dataset validation",
+
+            "2. Duplicate removal",
+
+            "3. TF-IDF features",
+
+            "4. Word + bigram features",
+
+            "5. Multiple ML models",
+
+            "6. Probability calibration",
+
+            "7. F1-based model selection"
+        ]
+
+        for step in steps:
 
             st.write(
-                f"**{spam_probability * 100:.2f}%**"
+                f"✓ {step}"
             )
 
-            # ----------------------------------------
-            # MODEL USED
-            # ----------------------------------------
 
-            st.info(
-                f"🧠 Prediction generated using "
-                f"**{best_model_name}** with TF-IDF features."
-            )
+# =========================================================
+# MODEL LAB
+# =========================================================
 
-    st.markdown(
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    # ========================================================
-    # ML PIPELINE
-    # ========================================================
-
-    st.markdown(
-        '<div class="card">',
-        unsafe_allow_html=True
-    )
-
-    st.subheader(
-        "🧠 Machine Learning Pipeline"
-    )
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-
-        st.metric(
-            "Feature Extraction",
-            "TF-IDF"
-        )
-
-    with col2:
-
-        st.metric(
-            "Best Model",
-            best_model_name
-        )
-
-    with col3:
-
-        st.metric(
-            "Classification",
-            "Binary"
-        )
-
-    st.markdown(
-        """
-        **Pipeline**
-
-        Raw Message → Text Preprocessing → TF-IDF
-        → Machine Learning Model → Spam / Not Spam
-        """
-    )
-
-    st.markdown(
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-# ============================================================
-# MODEL PERFORMANCE
-# ============================================================
-
-elif page == "📊 Model Performance":
+elif page == "📈 Model Lab":
 
     st.header(
-        "📊 Model Performance"
+        "📈 Model Performance Lab"
     )
 
-    st.write(
-        "Three supervised machine learning "
-        "algorithms are trained and evaluated "
-        "using the same dataset split."
+    performance = []
+
+    for name, result in results.items():
+
+        performance.append(
+
+            {
+
+                "Model": name,
+
+                "Accuracy":
+                    result["accuracy"] * 100,
+
+                "Precision":
+                    result["precision"] * 100,
+
+                "Recall":
+                    result["recall"] * 100,
+
+                "F1 Score":
+                    result["f1"] * 100
+            }
+        )
+
+    performance_df = pd.DataFrame(
+        performance
     )
-
-    # ========================================================
-    # BEST MODEL METRICS
-    # ========================================================
-
-    st.subheader(
-        f"🏆 Best Model — {best_model_name}"
-    )
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-
-        st.metric(
-            "Accuracy",
-            f"{best_results['Accuracy'] * 100:.2f}%"
-        )
-
-    with col2:
-
-        st.metric(
-            "Precision",
-            f"{best_results['Precision'] * 100:.2f}%"
-        )
-
-    with col3:
-
-        st.metric(
-            "Recall",
-            f"{best_results['Recall'] * 100:.2f}%"
-        )
-
-    with col4:
-
-        st.metric(
-            "F1 Score",
-            f"{best_results['F1 Score'] * 100:.2f}%"
-        )
-
-    st.markdown("---")
-
-    # ========================================================
-    # MODEL COMPARISON
-    # ========================================================
-
-    st.subheader(
-        "🏆 Model Comparison"
-    )
-
-    comparison = pd.DataFrame(
-        results
-    ).T
-
-    comparison_percent = (
-        comparison * 100
-    ).round(2)
 
     st.dataframe(
-        comparison_percent,
-        use_container_width=True
+
+        performance_df.style.format(
+
+            {
+
+                "Accuracy":
+                    "{:.2f}%",
+
+                "Precision":
+                    "{:.2f}%",
+
+                "Recall":
+                    "{:.2f}%",
+
+                "F1 Score":
+                    "{:.2f}%"
+            }
+        ),
+
+        use_container_width=True,
+
+        hide_index=True
     )
 
     st.subheader(
-        "📈 Performance Comparison"
+        f"🏆 Selected Model: "
+        f"{best_model_name}"
     )
 
-    st.bar_chart(
-        comparison_percent[
-            [
-                "Accuracy",
-                "Precision",
-                "Recall",
-                "F1 Score"
-            ]
-        ]
-    )
-
-    # ========================================================
-    # CONFUSION MATRIX
-    # ========================================================
-
-    st.subheader(
-        "🔲 Confusion Matrix"
-    )
-
-    cm = predictions_store[
+    best = results[
         best_model_name
-    ]["confusion_matrix"]
+    ]
 
-    cm_df = pd.DataFrame(
-        cm,
+    a, b, c, d = st.columns(4)
+
+    a.metric(
+        "Accuracy",
+        f"{best['accuracy'] * 100:.2f}%"
+    )
+
+    b.metric(
+        "Precision",
+        f"{best['precision'] * 100:.2f}%"
+    )
+
+    c.metric(
+        "Recall",
+        f"{best['recall'] * 100:.2f}%"
+    )
+
+    d.metric(
+        "F1",
+        f"{best['f1'] * 100:.2f}%"
+    )
+
+    st.subheader(
+        "Confusion Matrix"
+    )
+
+    matrix = pd.DataFrame(
+
+        best["confusion"],
+
         index=[
-            "Actual Not Spam",
+            "Actual Ham",
             "Actual Spam"
         ],
+
         columns=[
-            "Predicted Not Spam",
+            "Predicted Ham",
             "Predicted Spam"
         ]
     )
 
     st.dataframe(
-        cm_df,
+        matrix,
         use_container_width=True
     )
 
-    st.caption(
-        "The confusion matrix shows how many messages "
-        "were correctly and incorrectly classified."
+    st.info(
+        "The Linear SVM uses probability calibration "
+        "with cross-validation instead of treating its "
+        "raw decision score as a probability."
     )
 
-# ============================================================
-# DATASET INSIGHTS
-# ============================================================
 
-elif page == "📈 Dataset Insights":
+# =========================================================
+# DATASET INTELLIGENCE
+# =========================================================
+
+else:
 
     st.header(
-        "📈 Dataset Insights"
+        "📊 Dataset Intelligence"
     )
 
-    # ========================================================
-    # METRICS
-    # ========================================================
+    a, b = st.columns(2)
 
-    col1, col2, col3 = st.columns(3)
+    with a:
 
-    with col1:
-
-        st.metric(
-            "Total Messages",
-            f"{total_messages:,}"
+        st.subheader(
+            "Message Distribution"
         )
 
-    with col2:
-
-        st.metric(
-            "Spam Messages",
-            f"{spam_messages:,}"
+        distribution = (
+            df["label"]
+            .value_counts()
         )
 
-    with col3:
-
-        st.metric(
-            "Legitimate Messages",
-            f"{ham_messages:,}"
+        st.bar_chart(
+            distribution
         )
 
-    st.markdown("---")
+    with b:
 
-    # ========================================================
-    # CLASS DISTRIBUTION
-    # ========================================================
+        st.subheader(
+            "Average Message Length"
+        )
+
+        length_data = (
+            df.groupby(
+                "label"
+            )["char_count"]
+            .mean()
+            .round(1)
+        )
+
+        st.bar_chart(
+            length_data
+        )
 
     st.subheader(
-        "📊 Class Distribution"
+        "🔬 Feature Analysis"
     )
 
-    class_distribution = pd.DataFrame({
-        "Category": [
-            "Not Spam",
-            "Spam"
-        ],
-        "Messages": [
-            ham_messages,
-            spam_messages
-        ]
-    })
+    feature_table = pd.DataFrame(
 
-    st.bar_chart(
-        class_distribution.set_index(
-            "Category"
-        )
+        {
+
+            "Feature": [
+
+                "Average Characters",
+
+                "Average Words",
+
+                "Average URLs",
+
+                "Average Digits",
+
+                "Average Exclamations"
+            ],
+
+            "Ham": [
+
+                df.loc[
+                    df.target == 0,
+                    "char_count"
+                ].mean(),
+
+                df.loc[
+                    df.target == 0,
+                    "word_count"
+                ].mean(),
+
+                df.loc[
+                    df.target == 0,
+                    "url_count"
+                ].mean(),
+
+                df.loc[
+                    df.target == 0,
+                    "digit_count"
+                ].mean(),
+
+                df.loc[
+                    df.target == 0,
+                    "exclamation_count"
+                ].mean()
+            ],
+
+            "Spam": [
+
+                df.loc[
+                    df.target == 1,
+                    "char_count"
+                ].mean(),
+
+                df.loc[
+                    df.target == 1,
+                    "word_count"
+                ].mean(),
+
+                df.loc[
+                    df.target == 1,
+                    "url_count"
+                ].mean(),
+
+                df.loc[
+                    df.target == 1,
+                    "digit_count"
+                ].mean(),
+
+                df.loc[
+                    df.target == 1,
+                    "exclamation_count"
+                ].mean()
+            ]
+        }
     )
-
-    # ========================================================
-    # CLASS PERCENTAGE
-    # ========================================================
-
-    st.subheader(
-        "📌 Dataset Composition"
-    )
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-
-        st.metric(
-            "Not Spam",
-            f"{ham_percentage:.2f}%"
-        )
-
-    with col2:
-
-        st.metric(
-            "Spam",
-            f"{spam_percentage:.2f}%"
-        )
-
-    # ========================================================
-    # DATASET PREVIEW
-    # ========================================================
-
-    st.subheader(
-        "🔎 Dataset Preview"
-    )
-
-    preview = data.copy()
-
-    preview["label"] = preview[
-        "label"
-    ].map({
-        0: "Not Spam",
-        1: "Spam"
-    })
 
     st.dataframe(
-        preview.head(20),
-        use_container_width=True
-    )
 
-    # ========================================================
-    # DATASET INFORMATION
-    # ========================================================
+        feature_table.style.format(
+
+            {
+                "Ham": "{:.2f}",
+                "Spam": "{:.2f}"
+            }
+        ),
+
+        use_container_width=True,
+
+        hide_index=True
+    )
 
     st.subheader(
-        "ℹ️ Dataset Information"
+        "Dataset Preview"
     )
 
-    st.write(
-        f"""
-        **Total unique messages:** {total_messages:,}
+    st.dataframe(
 
-        **Spam messages:** {spam_messages:,}
+        df[
+            [
+                "label",
+                "message"
+            ]
+        ].head(25),
 
-        **Legitimate messages:** {ham_messages:,}
+        use_container_width=True,
 
-        **Training samples:** {len(X_train):,}
-
-        **Testing samples:** {len(X_test):,}
-
-        **Test split:** 20%
-
-        **Feature extraction:** TF-IDF
-
-        **Models evaluated:** 3
-        """
+        hide_index=True
     )
 
-# ============================================================
+
+# =========================================================
 # FOOTER
-# ============================================================
-
-st.markdown("---")
+# =========================================================
 
 st.markdown(
     """
-    <div style="text-align:center;color:#64748b;">
-        <b>SpamGuard AI</b><br>
-        Machine Learning + NLP • Intelligent Spam Detection
-    </div>
-    """,
+<div class="footer">
+SpamGuard AI • Machine Learning + NLP
+</div>
+""",
     unsafe_allow_html=True
 )
